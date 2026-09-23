@@ -236,7 +236,7 @@ async function updateGoogleProgress(tabId, progress) {
       panel.style.cssText = "position:fixed;z-index:2147483647;right:18px;bottom:18px;width:280px;padding:12px 14px;border-radius:12px;background:#152238;color:#fff;font:600 13px system-ui;box-shadow:0 8px 30px #0004";
       document.body.appendChild(panel);
     }
-    panel.innerHTML = `<strong>Email Source Verifier — ${value.status}</strong><br><strong>Pages: ${value.pages}/${value.maxPages} · Matches: ${value.matches}/${value.threshold}</strong><br>URLs: ${value.opened}/${value.scraped} opened/scrapped`;
+    panel.innerHTML = `<strong>Email Source Verifier — ${value.status}</strong><br><strong>Pages: ${value.pages}/${value.maxPages} · Matches: ${value.matches}/${value.threshold}</strong><br>URLs: ${value.opened}/${value.scraped} opened/total-urls-scrapped`;
     panel.style.whiteSpace = "pre-line";
   }, [progress]).catch(() => {});
 }
@@ -622,6 +622,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   })();
   return true;
 });
+
 
 
 
