@@ -334,7 +334,7 @@ async function scheduleHostQueues() {
 
 async function scanLoadedTab(tabId) {
   const job = await getJob();
-  if (!job || !["searching", "running", "paused"].includes(job.status)) return;
+  if (!job || !["searching", "running"].includes(job.status)) return;
   const record = (job.tabs || []).find((item) => item.tabId === tabId);
   if (!record || record.started) return;
   record.started = true;
@@ -421,13 +421,15 @@ async function processSearchTab(tabId) {
   const liveJob = await getJob();
   if (liveJob.matches.length >= liveJob.threshold) { await finishJob(liveJob); return; }
   if (liveJob.pagesThisRun >= liveJob.maxPagesPerRun || liveJob.searchExhausted) {
-    liveJob.status = liveJob.searchExhausted ? "running" : "paused";
+    liveJob.status = "running";
+    liveJob.googlePaused = !liveJob.searchExhausted;
     liveJob.nextSearchUrl = liveJob.searchExhausted ? null : `${liveJob.baseSearchUrl}&start=${liveJob.pagesVisited * 10}`;
     await saveJob(liveJob);
-    await updateGoogleProgress(tabId, { status: liveJob.searchExhausted ? "Scanning final page" : "Paused — press Search the web to continue", pages: liveJob.pagesVisited, maxPages: liveJob.maxPagesPerRun, matches: liveJob.matches.length, threshold: liveJob.threshold, opened: liveJob.urlsOpened || 0, scraped: liveJob.urlsScraped || 0 });
+    await updateGoogleProgress(tabId, { status: liveJob.searchExhausted ? "Scanning final page" : "Paused — press Start search to continue Google pages", pages: liveJob.pagesVisited, maxPages: liveJob.maxPagesPerRun, matches: liveJob.matches.length, threshold: liveJob.threshold, opened: liveJob.urlsOpened || 0, scraped: liveJob.urlsScraped || 0 });
     if (liveJob.searchExhausted && liveJob.pendingUrls === 0) await finishJob(liveJob);
     return;
   }
+  if (liveJob.googlePaused) return;
   liveJob.status = "searching";
   liveJob.nextSearchUrl = `${liveJob.baseSearchUrl}&start=${liveJob.pagesVisited * 10}`;
   await saveJob(liveJob);
@@ -435,16 +437,28 @@ async function processSearchTab(tabId) {
   await updateGoogleProgress(tabId, { status: `Waiting ${Math.ceil(pageDelay / 1000)}s before next Google page`, pages: liveJob.pagesVisited, maxPages: liveJob.maxPagesPerRun, matches: liveJob.matches.length, threshold: liveJob.threshold, opened: liveJob.urlsOpened || 0, scraped: liveJob.urlsScraped || 0 });
   await delay(pageDelay);
   const beforeNavigation = await getJob();
-  if (!beforeNavigation || beforeNavigation.status !== "searching") return;
+  if (!beforeNavigation || beforeNavigation.status !== "searching" || beforeNavigation.googlePaused) return;
   await chrome.tabs.update(tabId, { url: liveJob.nextSearchUrl }).catch(() => {});
 }
 
-async function pauseJob() {
+async function clearSeenUrls() {
+  await chrome.storage.local.remove(SEEN_URLS_KEY);
+}
+
+async function toggleGoogleSearch() {
   const job = await getJob();
-  if (!job || !["searching", "running"].includes(job.status)) return job;
-  job.status = "paused";
-  job.pausedAt = Date.now();
+  if (!job || !["searching", "running", "paused"].includes(job.status)) return job;
+  job.googlePaused = !job.googlePaused;
+  if (job.googlePaused) {
+    job.pausedAt = Date.now();
+    await saveJob(job);
+    return job;
+  }
+  job.status = "running";
   await saveJob(job);
+  if (job.nextSearchUrl && job.searchTabId) {
+    try { await chrome.tabs.update(job.searchTabId, { active: true, url: job.nextSearchUrl }); } catch {}
+  }
   return job;
 }
 
@@ -459,6 +473,7 @@ async function resetJob() {
       await chrome.tabs.remove(job.searchTabId).catch(() => {});
     }
   }
+  await clearSeenUrls();
   await chrome.storage.local.remove(JOB_KEY);
   notifyPopup();
   return null;
@@ -554,7 +569,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 
 chrome.tabs.onRemoved.addListener(async (tabId) => {
   const job = await getJob();
-  if (!job || !["searching", "running", "paused"].includes(job.status)) return;
+  if (!job || !["searching", "running"].includes(job.status)) return;
   const record = (job.tabs || []).find((item) => item.tabId === tabId);
   if (!record) return;
   job.tabs = job.tabs.filter((item) => item.tabId !== tabId);
@@ -580,8 +595,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         sendResponse({ settings: next });
       } else if (message.type === "START_SEARCH") {
         sendResponse({ job: await startSearch(message.email, message.threshold) });
-      } else if (message.type === "PAUSE_SEARCH") {
-        sendResponse({ job: await pauseJob() });
+      } else if (message.type === "TOGGLE_GOOGLE") {
+        sendResponse({ job: await toggleGoogleSearch() });
       } else if (message.type === "RESET_SEARCH") {
         sendResponse({ job: await resetJob() });
       } else if (message.type === "STOP_SEARCH") {
@@ -597,6 +612,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   })();
   return true;
 });
+
+
+
+
 
 
 
