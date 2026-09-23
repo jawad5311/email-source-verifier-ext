@@ -26,7 +26,7 @@ function render(state) {
   const status = locked ? "Search is running in another window" : !settings.enabled ? "Extension is off" : !job ? "Ready" : job.status === "searching" ? "Reading Google results…" : job.status === "running" ? "Scanning pages…" : job.status === "paused" ? "Paused — press Search the web to continue" : job.status === "complete" ? "Search complete" : job.status === "stopped" ? "Search stopped" : job.status === "error" ? "Could not complete search" : "Ready";
   $("#status").textContent = status;
   $(".status-dot").className = `status-dot ${running ? "running" : job?.status === "complete" ? "complete" : ""}`;
-  $("#progress").textContent = job ? `${job.matches?.length || 0}/${job.threshold || settings.threshold || 3} matches · ${job.pagesVisited || 0} Google pages` : "";
+  $("#progress").textContent = job ? `${job.matches?.length || 0}/${job.threshold || settings.threshold || 3} matches · ${job.pagesVisited || 0} Google pages · Tabs: ${job.tabs?.length || 0}/${settings.maxActiveTabs || 5}` : "";
   if (job?.email && !$("#email").value) $("#email").value = job.email;
   const matches = job?.matches || [];
   const results = $("#results");
@@ -75,4 +75,5 @@ $("#pause").addEventListener("click", async () => { await send("PAUSE_SEARCH"); 
 $("#reset").addEventListener("click", async () => { await send("RESET_SEARCH"); $("#email").value = ""; setError(); refresh(); });
 chrome.runtime.onMessage.addListener((message) => { if (message.type === "STATE_UPDATED") refresh(); });
 refresh();
+
 
