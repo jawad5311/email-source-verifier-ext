@@ -264,7 +264,10 @@ async function waitForVerification(tabId, job) {
 
 async function closeJobTabs(job) {
   const ids = new Set((job.tabs || []).map((item) => item.tabId).filter(Boolean));
-  await Promise.all([...ids].map((id) => chrome.tabs.remove(id).catch(() => {})));
+  await Promise.all([...ids].map(async (id) => {
+    await scrollTabToBottom(id);
+    await chrome.tabs.remove(id).catch(() => {});
+  }));
 }
 
 async function finishJob(job, status = "complete") {
@@ -451,7 +454,10 @@ async function resetJob() {
     job.status = "resetting";
     await saveJob(job);
     await closeJobTabs(job);
-    if (job.searchTabId) await chrome.tabs.remove(job.searchTabId).catch(() => {});
+    if (job.searchTabId) {
+      await scrollTabToBottom(job.searchTabId);
+      await chrome.tabs.remove(job.searchTabId).catch(() => {});
+    }
   }
   await chrome.storage.local.remove(JOB_KEY);
   notifyPopup();
@@ -465,7 +471,10 @@ async function stopJob() {
   job.finishedAt = Date.now();
   await saveJob(job);
   await closeJobTabs(job);
-  if (job.searchTabId) await chrome.tabs.remove(job.searchTabId).catch(() => {});
+  if (job.searchTabId) {
+    await scrollTabToBottom(job.searchTabId);
+    await chrome.tabs.remove(job.searchTabId).catch(() => {});
+  }
   return job;
 }
 
@@ -588,5 +597,6 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   })();
   return true;
 });
+
 
 
