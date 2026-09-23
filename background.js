@@ -484,6 +484,7 @@ async function stopJob() {
   if (!job || !["searching", "running", "paused"].includes(job.status)) return job;
   job.status = "stopped";
   job.finishedAt = Date.now();
+  await clearSeenUrls();
   await saveJob(job);
   await closeJobTabs(job);
   if (job.searchTabId) {
@@ -612,6 +613,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   })();
   return true;
 });
+
 
 
 
