@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Email Source Verifier</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="hero">
+        <div class="brand-mark"><img src="icons/icon.svg" alt="" /></div>
+        <div><h1>Email Source Verifier</h1><p>Find public pages that mention an email.</p></div>
+        <label class="switch" title="Turn extension on or off"><input id="enabled" type="checkbox" /><span></span></label>
+      </header>
+
+      <section class="card form-card">
+        <label for="email">Email address</label>
+        <input id="email" type="email" placeholder="person@example.com" autocomplete="off" />
+        <div class="two-col">
+          <label for="threshold">Stop after matches</label>
+          <input id="threshold" type="number" min="1" max="50" value="3" />
+        </div>
+        <div class="two-col">
+          <label for="pages">Google pages per run</label>
+          <input id="pages" type="number" min="1" max="50" value="5" />
+        </div>
+        <div class="actions"><button id="start" class="primary">Search the web</button><button id="stop" class="secondary" hidden>Stop</button></div>
+        <p id="error" class="error" role="alert"></p>
+      </section>
+
+      <section class="card status-card">
+        <div class="status-line"><span class="status-dot"></span><span id="status">Ready</span><span id="progress" class="muted"></span></div>
+        <div id="results" class="results empty">Your matching URLs will appear here.</div>
+      </section>
+
+      <section class="card exclusions-card">
+        <div class="row-between"><div><h2>Excluded websites</h2><p>Skip lead databases and other domains.</p></div><label class="switch"><input id="exclusionsEnabled" type="checkbox" /><span></span></label></div>
+        <button id="manageExclusions" class="link-button">Manage excluded sites</button>
+        <div id="exclusionsPanel" hidden><textarea id="excludedDomains" rows="4" placeholder="one domain per line"></textarea><button id="saveExclusions" class="secondary small">Save excluded sites</button></div>
+      </section>
+      <footer>Only scan pages you are authorized to access. Respect site terms and robots policies.</footer>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>
