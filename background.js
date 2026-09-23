@@ -193,7 +193,7 @@ async function updateGoogleProgress(tabId, progress) {
       panel.style.cssText = "position:fixed;z-index:2147483647;right:18px;bottom:18px;width:280px;padding:12px 14px;border-radius:12px;background:#152238;color:#fff;font:600 13px system-ui;box-shadow:0 8px 30px #0004";
       document.body.appendChild(panel);
     }
-    panel.textContent = `Email Source Verifier — ${value.status}\nPages: ${value.pages}/${value.maxPages} · Matches: ${value.matches}/${value.threshold}`;
+    panel.innerHTML = `<strong>Email Source Verifier — ${value.status}</strong><br><strong>Pages: ${value.pages}/${value.maxPages} · Matches: ${value.matches}/${value.threshold}</strong><br>URLs: ${value.opened}/${value.scraped} opened/scrapped`;
     panel.style.whiteSpace = "pre-line";
   }, [progress]).catch(() => {});
 }
@@ -205,7 +205,7 @@ async function waitForVerification(tabId, job) {
   job.verificationMessage = "Human verification required — complete it in the focused tab.";
   await saveJob(job);
   await chrome.tabs.update(tabId, { active: true }).catch(() => {});
-  await updateGoogleProgress(job.searchTabId, { status: "Waiting for human verification", pages: job.pagesVisited || 0, maxPages: job.maxPagesPerRun, matches: job.matches.length, threshold: job.threshold });
+  await updateGoogleProgress(job.searchTabId, { status: "Waiting for human verification", pages: job.pagesVisited || 0, maxPages: job.maxPagesPerRun, matches: job.matches.length, threshold: job.threshold, opened: job.urlsOpened || 0, scraped: job.urlsScraped || 0 });
   for (let attempt = 0; attempt < 240; attempt += 1) {
     await delay(1500);
     const stillBlocked = await executeInTab(tabId, detectHumanVerification, []).catch(() => true);
@@ -269,6 +269,7 @@ async function startQueuedHost(host) {
   const liveJob = await getJob();
   if (!liveJob || !["searching", "running", "paused"].includes(liveJob.status)) { await chrome.tabs.remove(tab.id).catch(() => {}); return; }
   liveJob.tabs.push({ tabId: tab.id, url: next, host, kind: isLinkedIn(next) ? "linkedin" : "other", started: false });
+  liveJob.urlsOpened = (liveJob.urlsOpened || 0) + 1;
   await saveJob(liveJob);
   await chrome.tabs.update(tab.id, { url: next });
 }
@@ -311,10 +312,11 @@ async function scanLoadedTab(tabId) {
     return;
   }
   const currentRecord = (current.tabs || []).find((item) => item.tabId === tabId);
+  current.urlsScraped = (current.urlsScraped || 0) + 1;
   if (currentRecord && result?.found && current.matches.length < current.threshold) {
     current.matches.push({ url: currentRecord.url, title: result.title, snippet: result.snippet, foundAt: Date.now() });
   }
-  await updateGoogleProgress(current.searchTabId, { status: "Scanning pages", pages: current.pagesVisited || 0, maxPages: current.maxPagesPerRun, matches: current.matches.length, threshold: current.threshold });
+  await updateGoogleProgress(current.searchTabId, { status: "Scanning pages", pages: current.pagesVisited || 0, maxPages: current.maxPagesPerRun, matches: current.matches.length, threshold: current.threshold, opened: current.urlsOpened || 0, scraped: current.urlsScraped || 0 });
   current.tabs = (current.tabs || []).filter((item) => item.tabId !== tabId);
   if (currentRecord?.host) {
     current.activeHosts = (current.activeHosts || []).filter((host) => host !== currentRecord.host);
@@ -367,7 +369,7 @@ async function processSearchTab(tabId) {
     liveJob.status = liveJob.searchExhausted ? "running" : "paused";
     liveJob.nextSearchUrl = liveJob.searchExhausted ? null : `${liveJob.baseSearchUrl}&start=${liveJob.pagesVisited * 10}`;
     await saveJob(liveJob);
-    await updateGoogleProgress(tabId, { status: liveJob.searchExhausted ? "Scanning final page" : "Paused — press Search the web to continue", pages: liveJob.pagesVisited, maxPages: liveJob.maxPagesPerRun, matches: liveJob.matches.length, threshold: liveJob.threshold });
+    await updateGoogleProgress(tabId, { status: liveJob.searchExhausted ? "Scanning final page" : "Paused — press Search the web to continue", pages: liveJob.pagesVisited, maxPages: liveJob.maxPagesPerRun, matches: liveJob.matches.length, threshold: liveJob.threshold, opened: liveJob.urlsOpened || 0, scraped: liveJob.urlsScraped || 0 });
     if (liveJob.searchExhausted && liveJob.pendingUrls === 0) await finishJob(liveJob);
     return;
   }
@@ -375,7 +377,7 @@ async function processSearchTab(tabId) {
   liveJob.nextSearchUrl = `${liveJob.baseSearchUrl}&start=${liveJob.pagesVisited * 10}`;
   await saveJob(liveJob);
   const pageDelay = 4000 + Math.floor(Math.random() * 4001);
-  await updateGoogleProgress(tabId, { status: `Waiting ${Math.ceil(pageDelay / 1000)}s before next Google page`, pages: liveJob.pagesVisited, maxPages: liveJob.maxPagesPerRun, matches: liveJob.matches.length, threshold: liveJob.threshold });
+  await updateGoogleProgress(tabId, { status: `Waiting ${Math.ceil(pageDelay / 1000)}s before next Google page`, pages: liveJob.pagesVisited, maxPages: liveJob.maxPagesPerRun, matches: liveJob.matches.length, threshold: liveJob.threshold, opened: liveJob.urlsOpened || 0, scraped: liveJob.urlsScraped || 0 });
   await delay(pageDelay);
   const beforeNavigation = await getJob();
   if (!beforeNavigation || beforeNavigation.status !== "searching") return;
@@ -414,7 +416,7 @@ async function startSearch(email, requestedThreshold) {
   const maxPagesPerRun = Math.max(1, Math.min(50, Number(settings.pagesPerRun) || 5));
   const job = {
     id: crypto.randomUUID(), email: email.trim(), threshold, status: "searching", matches: [], candidates: [],
-    tabs: [], hostQueues: {}, activeHosts: [], pendingUrls: 0, seenUrls: [], pagesVisited: 0, pagesThisRun: 0,
+    tabs: [], hostQueues: {}, activeHosts: [], pendingUrls: 0, urlsOpened: 0, urlsScraped: 0, seenUrls: [], pagesVisited: 0, pagesThisRun: 0,
     maxPagesPerRun, searchExhausted: false, ownerWindowId: currentWindow.id, startedAt: Date.now()
   };
   const searchUrl = `https://www.google.com/search?q=${encodeURIComponent(job.email)}`;
@@ -500,6 +502,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   })();
   return true;
 });
+
 
 
 
