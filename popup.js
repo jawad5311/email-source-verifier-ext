@@ -18,11 +18,12 @@ function render(state) {
   $("#activeTabs").value = settings.maxActiveTabs || 5;
   $("#excludedDomains").value = (settings.excludedDomains || []).join("\n");
   const running = job && ["searching", "running"].includes(job.status);
-  $("#start").disabled = !settings.enabled || running;
+  const locked = state.lockedByOtherWindow === true;
+  $("#start").disabled = !settings.enabled || running || locked;
   $("#start").textContent = job?.status === "paused" ? "Continue search" : "Search the web";
   $("#stop").hidden = !running;
   $("#email").disabled = running;
-  const status = !settings.enabled ? "Extension is off" : !job ? "Ready" : job.status === "searching" ? "Reading Google results…" : job.status === "running" ? "Scanning pages…" : job.status === "paused" ? "Paused — press Search the web to continue" : job.status === "complete" ? "Search complete" : job.status === "stopped" ? "Search stopped" : job.status === "error" ? "Could not complete search" : "Ready";
+  const status = locked ? "Search is running in another window" : !settings.enabled ? "Extension is off" : !job ? "Ready" : job.status === "searching" ? "Reading Google results…" : job.status === "running" ? "Scanning pages…" : job.status === "paused" ? "Paused — press Search the web to continue" : job.status === "complete" ? "Search complete" : job.status === "stopped" ? "Search stopped" : job.status === "error" ? "Could not complete search" : "Ready";
   $("#status").textContent = status;
   $(".status-dot").className = `status-dot ${running ? "running" : job?.status === "complete" ? "complete" : ""}`;
   $("#progress").textContent = job ? `${job.matches?.length || 0}/${job.threshold || settings.threshold || 3} matches · ${job.pagesVisited || 0} Google pages` : "";
@@ -73,4 +74,5 @@ $("#start").addEventListener("click", async () => {
 $("#stop").addEventListener("click", async () => { await send("STOP_SEARCH"); refresh(); });
 chrome.runtime.onMessage.addListener((message) => { if (message.type === "STATE_UPDATED") refresh(); });
 refresh();
+
 

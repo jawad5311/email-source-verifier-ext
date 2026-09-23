@@ -232,7 +232,7 @@ async function startNextLinkedIn() {
   }
   job.linkedinActive = true;
   await saveJob(job);
-  const tab = await chrome.tabs.create({ url: "about:blank", active: false });
+  const tab = await chrome.tabs.create({ url: "about:blank", active: false, windowId: job.ownerWindowId });
   const liveJob = await getJob();
   if (!liveJob || liveJob.status !== "running") {
     await chrome.tabs.remove(tab.id).catch(() => {});
@@ -255,7 +255,7 @@ async function startQueuedHost(host) {
   job.activeHosts = [...new Set([...(job.activeHosts || []), host])];
   job.hostQueues[host] = queue;
   await saveJob(job);
-  const tab = await chrome.tabs.create({ url: "about:blank", active: false });
+  const tab = await chrome.tabs.create({ url: "about:blank", active: false, windowId: job.ownerWindowId });
   const liveJob = await getJob();
   if (!liveJob || !["searching", "running", "paused"].includes(liveJob.status)) { await chrome.tabs.remove(tab.id).catch(() => {}); return; }
   liveJob.tabs.push({ tabId: tab.id, url: next, host, kind: isLinkedIn(next) ? "linkedin" : "other", started: false });
@@ -383,9 +383,11 @@ async function stopJob() {
 }
 
 async function startSearch(email, requestedThreshold) {
+  const currentWindow = await chrome.windows.getCurrent();
   const settings = await getSettings();
   if (!settings.enabled) throw new Error("The extension is turned off.");
   const existing = await getJob();
+  if (existing && existing.ownerWindowId !== currentWindow.id && ["searching", "running", "paused"].includes(existing.status)) throw new Error("This search is already running in another browser window.");
   if (existing && existing.email.toLowerCase() === email.trim().toLowerCase() && existing.status === "paused" && existing.nextSearchUrl) {
     existing.status = "searching";
     existing.pagesThisRun = 0;
@@ -400,10 +402,10 @@ async function startSearch(email, requestedThreshold) {
   const job = {
     id: crypto.randomUUID(), email: email.trim(), threshold, status: "searching", matches: [], candidates: [],
     tabs: [], hostQueues: {}, activeHosts: [], pendingUrls: 0, seenUrls: [], pagesVisited: 0, pagesThisRun: 0,
-    maxPagesPerRun, searchExhausted: false, startedAt: Date.now()
+    maxPagesPerRun, searchExhausted: false, ownerWindowId: currentWindow.id, startedAt: Date.now()
   };
   const searchUrl = `https://www.google.com/search?q=${encodeURIComponent(job.email)}`;
-  const searchTab = await chrome.tabs.create({ url: "about:blank", active: true });
+  const searchTab = await chrome.tabs.create({ url: "about:blank", active: true, windowId: currentWindow.id });
   job.searchTabId = searchTab.id;
   job.searchUrl = searchUrl;
   job.baseSearchUrl = `https://www.google.com/search?q=${encodeURIComponent(job.email)}`;
@@ -412,8 +414,8 @@ async function startSearch(email, requestedThreshold) {
   return job;
 }
 
-async function openMatch(match, email) {
-  const tab = await chrome.tabs.create({ url: "about:blank", active: true });
+async function openMatch(match, email, windowId) {
+  const tab = await chrome.tabs.create({ url: "about:blank", active: true, windowId });
   const listener = async (tabId, changeInfo, updatedTab) => {
     if (tabId !== tab.id || changeInfo.status !== "complete") return;
     if (!(changeInfo.url || updatedTab?.url || "").startsWith("http")) return;
@@ -434,9 +436,10 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (changeInfo.status !== "complete") return;
   getJob().then((job) => {
     if (!job) return;
+    if (job.ownerWindowId && tab?.windowId !== job.ownerWindowId) return;
     const currentUrl = changeInfo.url || tab?.url || "";
     if (job.status === "searching" && job.searchTabId === tabId && currentUrl.startsWith("https://www.google.com/search")) processSearchTab(tabId);
-    else if (job.status === "running") {
+    else if (["searching", "running", "paused"].includes(job.status)) {
       const record = (job.tabs || []).find((item) => item.tabId === tabId);
       if (record && currentUrl.startsWith("http")) scanLoadedTab(tabId);
     }
@@ -459,7 +462,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   (async () => {
     try {
       if (message.type === "GET_STATE") {
-        sendResponse({ settings: await getSettings(), job: await getJob() });
+        const settings = await getSettings();
+        const job = await getJob();
+        const currentWindow = await chrome.windows.getCurrent();
+        sendResponse({ settings, job, lockedByOtherWindow: !!(job?.ownerWindowId && job.ownerWindowId !== currentWindow.id && ["searching", "running", "paused"].includes(job.status)) });
       } else if (message.type === "SET_SETTINGS") {
         const current = await getSettings();
         const next = { ...current, ...message.settings };
@@ -472,7 +478,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         sendResponse({ job: await stopJob() });
       } else if (message.type === "OPEN_MATCH") {
         const job = await getJob();
-        await openMatch(message.match, job?.email || message.email);
+        await openMatch(message.match, job?.email || message.email, job?.ownerWindowId);
         sendResponse({ ok: true });
       }
     } catch (error) {
@@ -481,6 +487,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   })();
   return true;
 });
+
+
+
+
 
 
 
