@@ -38,6 +38,16 @@ function notifyPopup() {
   chrome.runtime.sendMessage({ type: "STATE_UPDATED" }).catch(() => {});
 }
 
+async function getActiveWindow() {
+  return chrome.windows.getLastFocused({ populate: false });
+}
+
+async function windowExists(windowId) {
+  if (windowId === undefined || windowId === null) return false;
+  const windows = await chrome.windows.getAll({ populate: false });
+  return windows.some((item) => item.id === windowId);
+}
+
 function normalizeDomain(value) {
   return String(value || "")
     .trim()
@@ -383,11 +393,14 @@ async function stopJob() {
 }
 
 async function startSearch(email, requestedThreshold) {
-  const currentWindow = await chrome.windows.getCurrent();
+  const currentWindow = await getActiveWindow();
   const settings = await getSettings();
   if (!settings.enabled) throw new Error("The extension is turned off.");
   const existing = await getJob();
-  if (existing && existing.ownerWindowId !== currentWindow.id && ["searching", "running", "paused"].includes(existing.status)) throw new Error("This search is already running in another browser window.");
+  if (existing && existing.ownerWindowId !== currentWindow.id && ["searching", "running", "paused"].includes(existing.status)) {
+    if (await windowExists(existing.ownerWindowId)) throw new Error("This search is already running in another browser window.");
+    await stopJob();
+  }
   if (existing && existing.email.toLowerCase() === email.trim().toLowerCase() && existing.status === "paused" && existing.nextSearchUrl) {
     existing.status = "searching";
     existing.pagesThisRun = 0;
@@ -464,7 +477,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       if (message.type === "GET_STATE") {
         const settings = await getSettings();
         const job = await getJob();
-        const currentWindow = await chrome.windows.getCurrent();
+        const currentWindow = await getActiveWindow();
         sendResponse({ settings, job, lockedByOtherWindow: !!(job?.ownerWindowId && job.ownerWindowId !== currentWindow.id && ["searching", "running", "paused"].includes(job.status)) });
       } else if (message.type === "SET_SETTINGS") {
         const current = await getSettings();
@@ -487,6 +500,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   })();
   return true;
 });
+
 
 
 
