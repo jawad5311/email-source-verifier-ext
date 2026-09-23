@@ -247,7 +247,16 @@ async function waitForVerification(tabId, job) {
   job.verifyingTabId = tabId;
   job.verificationMessage = "Human verification required — complete it in the focused tab.";
   await saveJob(job);
+  const verificationTab = await chrome.tabs.get(tabId).catch(() => null);
+  if (verificationTab?.windowId !== undefined) await chrome.windows.update(verificationTab.windowId, { focused: true }).catch(() => {});
   await chrome.tabs.update(tabId, { active: true }).catch(() => {});
+  await executeInTab(tabId, (text) => {
+    const banner = document.createElement("div");
+    banner.textContent = text;
+    banner.style.cssText = "position:fixed;z-index:2147483647;top:16px;left:50%;transform:translateX(-50%);padding:14px 18px;border-radius:12px;background:#8b2f2f;color:#fff;font:700 14px system-ui;box-shadow:0 8px 30px #0005";
+    document.body.appendChild(banner);
+    setTimeout(() => banner.remove(), 12000);
+  }, ["Human verification required — complete it in this tab."]).catch(() => {});
   await updateGoogleProgress(job.searchTabId, { status: "Waiting for human verification", pages: job.pagesVisited || 0, maxPages: job.maxPagesPerRun, matches: job.matches.length, threshold: job.threshold, opened: job.urlsOpened || 0, scraped: job.urlsScraped || 0 });
   for (let attempt = 0; attempt < 240; attempt += 1) {
     await delay(1500);
@@ -613,6 +622,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   })();
   return true;
 });
+
 
 
 
