@@ -16,6 +16,7 @@ const DEFAULT_SETTINGS = {
 
 const JOB_KEY = "esvJob";
 const SETTINGS_KEY = "esvSettings";
+const SEEN_URLS_KEY = "esvSeenUrls";
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -179,6 +180,33 @@ async function highlightEmailOnPage(email) {
   return false;
 }
 
+async function scrollTabToBottom(tabId) {
+  await executeInTab(tabId, async () => {
+    for (let pass = 0; pass < 10; pass += 1) {
+      window.scrollTo(0, document.documentElement.scrollHeight);
+      await new Promise((resolve) => setTimeout(resolve, 220));
+    }
+  }, []).catch(() => {});
+}
+
+async function showTabIssue(tabId, message, duration = 10000) {
+  await chrome.tabs.update(tabId, { active: true }).catch(() => {});
+  await executeInTab(tabId, (text, timeout) => {
+    const banner = document.createElement("div");
+    banner.textContent = text;
+    banner.style.cssText = "position:fixed;z-index:2147483647;top:16px;left:50%;transform:translateX(-50%);max-width:520px;padding:14px 18px;border-radius:12px;background:#8b2f2f;color:#fff;font:700 14px system-ui;box-shadow:0 8px 30px #0005;text-align:center";
+    document.body.appendChild(banner);
+    setTimeout(() => banner.remove(), timeout);
+  }, [message, duration]).catch(() => {});
+  await delay(duration);
+}
+
+async function detectPageIssue() {
+  const body = (document.body?.innerText || "").toLowerCase();
+  if (/access denied|403 forbidden|404 not found|this site can.t be reached|network error|something went wrong|temporarily unavailable|enable javascript to continue/.test(body)) return "This website reported an access or loading issue. Scroll manually or resolve the page issue.";
+  return "";
+}
+
 async function detectHumanVerification() {
   const body = (document.body?.innerText || "").toLowerCase();
   return /verify you are human|human verification|unusual traffic|captcha|recaptcha|i'm not a robot|are you a robot|security check/.test(body);
@@ -295,17 +323,23 @@ async function scanLoadedTab(tabId) {
   await saveJob(job);
 
   if (!(await waitForVerification(tabId, job))) {
+    await showTabIssue(tabId, "Verification did not complete. Please scroll manually or finish the verification.", 10000);
+    await scrollTabToBottom(tabId);
     await chrome.tabs.remove(tabId).catch(() => {});
     return;
-  }
+}
 
   let result = { found: false, title: "Untitled page", snippet: "" };
+  let issueMessage = await executeInTab(tabId, detectPageIssue, []).catch(() => "");
   try {
     result = await executeInTab(tabId, scanPageForEmail, [job.email]);
   } catch {
+    issueMessage = "This website could not be scanned. Scroll manually or check the page for an access issue.";
     result = { found: false, title: "Page could not be scanned", snippet: "" };
   }
 
+  if (issueMessage) await showTabIssue(tabId, issueMessage, 10000);
+  await scrollTabToBottom(tabId);
   const current = await getJob();
   if (!current || !["searching", "running", "paused"].includes(current.status)) {
     await chrome.tabs.remove(tabId).catch(() => {});
@@ -349,8 +383,11 @@ async function processSearchTab(tabId) {
   const settings = await getSettings();
   const urls = [...new Set((pageData?.links || []).map(cleanGoogleUrl).filter(Boolean))]
     .filter((url) => !isExcluded(url, settings));
-  const freshUrls = urls.filter((url) => !(job.seenUrls || []).includes(url));
+  const stored = await chrome.storage.local.get(SEEN_URLS_KEY);
+  const rememberedUrls = stored[SEEN_URLS_KEY] || [];
+  const freshUrls = urls.filter((url) => !(job.seenUrls || []).includes(url) && !rememberedUrls.includes(url));
   job.seenUrls = [...(job.seenUrls || []), ...freshUrls];
+  await chrome.storage.local.set({ [SEEN_URLS_KEY]: [...new Set([...rememberedUrls, ...freshUrls])].slice(-5000) });
   job.candidates = [...(job.candidates || []), ...freshUrls];
   job.hostQueues = job.hostQueues || {};
   for (const url of freshUrls) {
@@ -502,6 +539,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   })();
   return true;
 });
+
+
+
+
+
+
 
 
 
