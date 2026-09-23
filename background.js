@@ -301,7 +301,7 @@ async function startQueuedHost(host) {
   if (!job || !["searching", "running"].includes(job.status) || job.matches.length >= job.threshold) return;
   const settings = await getSettings();
   const maxActiveTabs = Math.max(1, Math.min(50, Number(settings.maxActiveTabs) || 5));
-  if ((job.tabs || []).length >= maxActiveTabs) return;
+  if ((job.tabs || []).length + (job.searchTabId ? 1 : 0) >= maxActiveTabs) return;
   const queue = job.hostQueues?.[host] || [];
   if (!queue.length || job.activeHosts?.includes(host)) return;
   const next = queue.shift();
@@ -588,4 +588,5 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   })();
   return true;
 });
+
 
