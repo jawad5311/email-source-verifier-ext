@@ -10,7 +10,8 @@ const DEFAULT_SETTINGS = {
     "hunter.io"
   ],
   threshold: 3,
-  pagesPerRun: 5
+  pagesPerRun: 5,
+  maxActiveTabs: 5
 };
 
 const JOB_KEY = "esvJob";
@@ -245,6 +246,9 @@ async function startNextLinkedIn() {
 async function startQueuedHost(host) {
   const job = await getJob();
   if (!job || !["searching", "running", "paused"].includes(job.status) || job.matches.length >= job.threshold) return;
+  const settings = await getSettings();
+  const maxActiveTabs = Math.max(1, Math.min(50, Number(settings.maxActiveTabs) || 5));
+  if ((job.tabs || []).length >= maxActiveTabs) return;
   const queue = job.hostQueues?.[host] || [];
   if (!queue.length || job.activeHosts?.includes(host)) return;
   const next = queue.shift();
@@ -260,9 +264,15 @@ async function startQueuedHost(host) {
 }
 
 async function scheduleHostQueues() {
-  const job = await getJob();
+  let job = await getJob();
   if (!job) return;
-  await Promise.all(Object.keys(job.hostQueues || {}).map(startQueuedHost));
+  for (const host of Object.keys(job.hostQueues || {})) {
+    job = await getJob();
+    const settings = await getSettings();
+    const maxActiveTabs = Math.max(1, Math.min(50, Number(settings.maxActiveTabs) || 5));
+    if ((job.tabs || []).length >= maxActiveTabs) break;
+    await startQueuedHost(host);
+  }
 }
 
 async function scanLoadedTab(tabId) {
@@ -354,7 +364,11 @@ async function processSearchTab(tabId) {
   liveJob.status = "searching";
   liveJob.nextSearchUrl = `${liveJob.baseSearchUrl}&start=${liveJob.pagesVisited * 10}`;
   await saveJob(liveJob);
-  await updateGoogleProgress(tabId, { status: "Scanning results", pages: liveJob.pagesVisited, maxPages: liveJob.maxPagesPerRun, matches: liveJob.matches.length, threshold: liveJob.threshold });
+  const pageDelay = 4000 + Math.floor(Math.random() * 4001);
+  await updateGoogleProgress(tabId, { status: `Waiting ${Math.ceil(pageDelay / 1000)}s before next Google page`, pages: liveJob.pagesVisited, maxPages: liveJob.maxPagesPerRun, matches: liveJob.matches.length, threshold: liveJob.threshold });
+  await delay(pageDelay);
+  const beforeNavigation = await getJob();
+  if (!beforeNavigation || beforeNavigation.status !== "searching") return;
   await chrome.tabs.update(tabId, { url: liveJob.nextSearchUrl });
 }
 
@@ -467,3 +481,6 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   })();
   return true;
 });
+
+
+

@@ -15,6 +15,7 @@ function render(state) {
   $("#exclusionsEnabled").checked = settings.exclusionsEnabled !== false;
   $("#threshold").value = settings.threshold || 3;
   $("#pages").value = settings.pagesPerRun || 5;
+  $("#activeTabs").value = settings.maxActiveTabs || 5;
   $("#excludedDomains").value = (settings.excludedDomains || []).join("\n");
   const running = job && ["searching", "running"].includes(job.status);
   $("#start").disabled = !settings.enabled || running;
@@ -50,6 +51,11 @@ $("#threshold").addEventListener("change", (event) => {
   event.target.value = threshold;
   send("SET_SETTINGS", { settings: { threshold } }).then(refresh);
 });
+$("#activeTabs").addEventListener("change", (event) => {
+  const maxActiveTabs = Math.max(1, Math.min(50, Number(event.target.value) || 5));
+  event.target.value = maxActiveTabs;
+  send("SET_SETTINGS", { settings: { maxActiveTabs } }).then(refresh);
+});
 $("#pages").addEventListener("change", (event) => {
   const pagesPerRun = Math.max(1, Math.min(50, Number(event.target.value) || 5));
   event.target.value = pagesPerRun;
@@ -67,3 +73,4 @@ $("#start").addEventListener("click", async () => {
 $("#stop").addEventListener("click", async () => { await send("STOP_SEARCH"); refresh(); });
 chrome.runtime.onMessage.addListener((message) => { if (message.type === "STATE_UPDATED") refresh(); });
 refresh();
+
