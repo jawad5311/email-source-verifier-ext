@@ -21,7 +21,7 @@ function render(state) {
   const locked = state.lockedByOtherWindow === true;
   $("#start").disabled = !settings.enabled || running || locked;
   $("#start").textContent = job?.status === "paused" ? "Continue search" : "Search the web";
-  $("#stop").hidden = !running;
+  $("#pause").hidden = !running;
   $("#email").disabled = running;
   const status = locked ? "Search is running in another window" : !settings.enabled ? "Extension is off" : !job ? "Ready" : job.status === "searching" ? "Reading Google results…" : job.status === "running" ? "Scanning pages…" : job.status === "paused" ? "Paused — press Search the web to continue" : job.status === "complete" ? "Search complete" : job.status === "stopped" ? "Search stopped" : job.status === "error" ? "Could not complete search" : "Ready";
   $("#status").textContent = status;
@@ -71,8 +71,8 @@ $("#start").addEventListener("click", async () => {
   const response = await send("START_SEARCH", { email, threshold: Number($("#threshold").value) });
   if (response?.error) setError(response.error); else refresh();
 });
-$("#stop").addEventListener("click", async () => { await send("STOP_SEARCH"); refresh(); });
+$("#pause").addEventListener("click", async () => { await send("PAUSE_SEARCH"); refresh(); });
+$("#reset").addEventListener("click", async () => { await send("RESET_SEARCH"); $("#email").value = ""; setError(); refresh(); });
 chrome.runtime.onMessage.addListener((message) => { if (message.type === "STATE_UPDATED") refresh(); });
 refresh();
-
 

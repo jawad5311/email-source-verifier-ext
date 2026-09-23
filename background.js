@@ -19,6 +19,7 @@ const SETTINGS_KEY = "esvSettings";
 const SEEN_URLS_KEY = "esvSeenUrls";
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+let schedulerRunning = false;
 
 async function getSettings() {
   const { [SETTINGS_KEY]: stored } = await chrome.storage.local.get(SETTINGS_KEY);
@@ -84,15 +85,29 @@ function siteHost(url) {
   try { return new URL(url).hostname.toLowerCase().replace(/^www\./, ""); } catch { return "unknown"; }
 }
 
+function normalizeScanUrl(raw) {
+  try {
+    const url = new URL(raw);
+    url.hash = "";
+    const removable = /^(utm_|gclid$|fbclid$|msclkid$|dclid$|mc_cid$|mc_eid$|ref$|referrer$|source$)/i;
+    for (const key of [...url.searchParams.keys()]) if (removable.test(key)) url.searchParams.delete(key);
+    const params = [...url.searchParams.entries()].sort(([a], [b]) => a.localeCompare(b));
+    url.search = "";
+    for (const [key, value] of params) url.searchParams.append(key, value);
+    if (url.pathname.length > 1) url.pathname = url.pathname.replace(/\/+$/, "");
+    return url.href;
+  } catch { return ""; }
+}
+
 function cleanGoogleUrl(raw) {
   try {
     const url = new URL(raw, "https://www.google.com");
     if (url.hostname.endsWith("google.com") && url.pathname === "/url") {
-      return url.searchParams.get("q") || url.searchParams.get("url") || "";
+      return normalizeScanUrl(url.searchParams.get("q") || url.searchParams.get("url") || "");
     }
     if (!["http:", "https:"].includes(url.protocol)) return "";
     if (url.hostname.endsWith("google.com")) return "";
-    return url.href;
+    return normalizeScanUrl(url.href);
   } catch {
     return "";
   }
@@ -283,7 +298,7 @@ async function startNextLinkedIn() {
 
 async function startQueuedHost(host) {
   const job = await getJob();
-  if (!job || !["searching", "running", "paused"].includes(job.status) || job.matches.length >= job.threshold) return;
+  if (!job || !["searching", "running"].includes(job.status) || job.matches.length >= job.threshold) return;
   const settings = await getSettings();
   const maxActiveTabs = Math.max(1, Math.min(50, Number(settings.maxActiveTabs) || 5));
   if ((job.tabs || []).length >= maxActiveTabs) return;
@@ -295,7 +310,7 @@ async function startQueuedHost(host) {
   await saveJob(job);
   const tab = await chrome.tabs.create({ url: "about:blank", active: false, windowId: job.ownerWindowId });
   const liveJob = await getJob();
-  if (!liveJob || !["searching", "running", "paused"].includes(liveJob.status)) { await chrome.tabs.remove(tab.id).catch(() => {}); return; }
+  if (!liveJob || !["searching", "running"].includes(liveJob.status)) { await chrome.tabs.remove(tab.id).catch(() => {}); return; }
   liveJob.tabs.push({ tabId: tab.id, url: next, host, kind: isLinkedIn(next) ? "linkedin" : "other", started: false });
   liveJob.urlsOpened = (liveJob.urlsOpened || 0) + 1;
   await saveJob(liveJob);
@@ -418,16 +433,39 @@ async function processSearchTab(tabId) {
   await delay(pageDelay);
   const beforeNavigation = await getJob();
   if (!beforeNavigation || beforeNavigation.status !== "searching") return;
-  await chrome.tabs.update(tabId, { url: liveJob.nextSearchUrl });
+  await chrome.tabs.update(tabId, { url: liveJob.nextSearchUrl }).catch(() => {});
+}
+
+async function pauseJob() {
+  const job = await getJob();
+  if (!job || !["searching", "running"].includes(job.status)) return job;
+  job.status = "paused";
+  job.pausedAt = Date.now();
+  await saveJob(job);
+  return job;
+}
+
+async function resetJob() {
+  const job = await getJob();
+  if (job) {
+    job.status = "resetting";
+    await saveJob(job);
+    await closeJobTabs(job);
+    if (job.searchTabId) await chrome.tabs.remove(job.searchTabId).catch(() => {});
+  }
+  await chrome.storage.local.remove(JOB_KEY);
+  notifyPopup();
+  return null;
 }
 
 async function stopJob() {
   const job = await getJob();
-  if (!job || !["searching", "running"].includes(job.status)) return job;
+  if (!job || !["searching", "running", "paused"].includes(job.status)) return job;
   job.status = "stopped";
   job.finishedAt = Date.now();
   await saveJob(job);
   await closeJobTabs(job);
+  if (job.searchTabId) await chrome.tabs.remove(job.searchTabId).catch(() => {});
   return job;
 }
 
@@ -445,7 +483,14 @@ async function startSearch(email, requestedThreshold) {
     existing.pagesThisRun = 0;
     existing.maxPagesPerRun = Math.max(1, Math.min(50, Number(settings.pagesPerRun) || 5));
     await saveJob(existing);
-    await chrome.tabs.update(existing.searchTabId, { active: true, url: existing.nextSearchUrl });
+    try {
+      await chrome.tabs.update(existing.searchTabId, { active: true, url: existing.nextSearchUrl });
+    } catch {
+      const replacement = await chrome.tabs.create({ url: "about:blank", active: true, windowId: currentWindow.id });
+      existing.searchTabId = replacement.id;
+      await saveJob(existing);
+      await chrome.tabs.update(replacement.id, { url: existing.nextSearchUrl }).catch(() => {});
+    }
     return existing;
   }
   await stopJob();
@@ -500,7 +545,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 
 chrome.tabs.onRemoved.addListener(async (tabId) => {
   const job = await getJob();
-  if (!job || !["running", "paused"].includes(job.status)) return;
+  if (!job || !["searching", "running", "paused"].includes(job.status)) return;
   const record = (job.tabs || []).find((item) => item.tabId === tabId);
   if (!record) return;
   job.tabs = job.tabs.filter((item) => item.tabId !== tabId);
@@ -526,6 +571,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         sendResponse({ settings: next });
       } else if (message.type === "START_SEARCH") {
         sendResponse({ job: await startSearch(message.email, message.threshold) });
+      } else if (message.type === "PAUSE_SEARCH") {
+        sendResponse({ job: await pauseJob() });
+      } else if (message.type === "RESET_SEARCH") {
+        sendResponse({ job: await resetJob() });
       } else if (message.type === "STOP_SEARCH") {
         sendResponse({ job: await stopJob() });
       } else if (message.type === "OPEN_MATCH") {
@@ -539,18 +588,4 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   })();
   return true;
 });
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
