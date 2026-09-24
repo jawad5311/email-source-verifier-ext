@@ -11,12 +11,16 @@ const DEFAULT_SETTINGS = {
   ],
   threshold: 3,
   pagesPerRun: 5,
-  maxActiveTabs: 5
+  maxActiveTabs: 5,
+  partialMatchEnabled: false,
+  googleClientId: ""
 };
 
 const JOB_KEY = "esvJob";
 const SETTINGS_KEY = "esvSettings";
 const SEEN_URLS_KEY = "esvSeenUrls";
+const GOOGLE_TOKEN_KEY = "esvGoogleToken";
+let sheetWriteChain = Promise.resolve();
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 let schedulerRunning = false;
@@ -124,18 +128,18 @@ async function extractGoogleLinks() {
   return { links, hasNext };
 }
 
-async function scanPageForEmail(email) {
+async function scanPageForEmail(email, partialEnabled = false) {
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-  const canonicalize = (value) => String(value || "")
+  const deobfuscate = (value) => String(value || "")
     .toLowerCase()
     .replace(/&#(?:64|x40);|&commat;/gi, "@")
     .replace(/&#(?:46|x2e);|&period;/gi, ".")
     .replace(/\s*(?:\[at\]|\(at\)|\{at\}|\bat\b)\s*/gi, "@")
     .replace(/\s*(?:\[dot\]|\(dot\)|\{dot\}|\bdot\b)\s*/gi, ".")
     .replace(/\s*@\s*/g, "@")
-    .replace(/\s*\.\s*/g, ".")
-    .replace(/\s+/g, "");
-  const needle = canonicalize(email);
+    .replace(/\s*\.\s*/g, ".");
+  const canonicalize = (value) => deobfuscate(value).replace(/\s+/g, "");
+  const localPart = String(email).split("@")[0].toLowerCase();
   let lastHeight = 0;
   for (let pass = 0; pass < 10; pass += 1) {
     window.scrollTo(0, document.documentElement.scrollHeight);
@@ -147,7 +151,12 @@ async function scanPageForEmail(email) {
 
   const text = document.body?.innerText || "";
   const html = document.documentElement?.innerHTML || "";
-  const found = canonicalize(text).includes(needle) || canonicalize(html).includes(needle);
+  const searchable = deobfuscate(`${text}\n${html}`);
+  const emails = [...new Set((searchable.match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi) || [])
+    .map((value) => value.toLowerCase().replace(/\s+/g, ""))
+    .filter((value) => value.length <= 254))];
+  const found = canonicalize(searchable).includes(needle);
+  const partialFound = !found && partialEnabled && localPart.length >= 3 && searchable.toLowerCase().includes(localPart);
   let snippet = "";
   let matchedElement = null;
 
@@ -176,7 +185,7 @@ async function scanPageForEmail(email) {
       document.body.appendChild(badge);
     }
   }
-  return { found, title: document.title || "Untitled page", snippet };
+  return { found, partialFound, emails, title: document.title || "Untitled page", snippet };
 }
 
 async function highlightEmailOnPage(email) {
@@ -356,13 +365,14 @@ async function scanLoadedTab(tabId) {
     return;
 }
 
-  let result = { found: false, title: "Untitled page", snippet: "" };
+  let result = { found: false, partialFound: false, emails: [], title: "Untitled page", snippet: "" };
   let issueMessage = await executeInTab(tabId, detectPageIssue, []).catch(() => "");
   try {
-    result = await executeInTab(tabId, scanPageForEmail, [job.email]);
+    const scanSettings = await getSettings();
+    result = await executeInTab(tabId, scanPageForEmail, [job.email, scanSettings.partialMatchEnabled === true]);
   } catch {
     issueMessage = "This website could not be scanned. Scroll manually or check the page for an access issue.";
-    result = { found: false, title: "Page could not be scanned", snippet: "" };
+    result = { found: false, partialFound: false, emails: [], title: "Page could not be scanned", snippet: "" };
   }
 
   if (issueMessage) await showTabIssue(tabId, issueMessage, 10000);
@@ -376,7 +386,22 @@ async function scanLoadedTab(tabId) {
   current.urlsScraped = (current.urlsScraped || 0) + 1;
   if (currentRecord && result?.found && current.matches.length < current.threshold) {
     current.matches.push({ url: currentRecord.url, title: result.title, snippet: result.snippet, foundAt: Date.now() });
+  } else if (currentRecord && result?.partialFound) {
+    current.partialMatches = current.partialMatches || [];
+    if (!current.partialMatches.some((item) => item.url === currentRecord.url)) current.partialMatches.push({ url: currentRecord.url, title: result.title, snippet: result.snippet, foundAt: Date.now() });
   }
+  current.discoveredEmails = current.discoveredEmails || [];
+  for (const foundEmail of (result?.emails || [])) {
+    if (foundEmail.toLowerCase() === current.email.toLowerCase()) continue;
+    if (!current.discoveredEmails.some((item) => item.email === foundEmail && item.url === currentRecord?.url)) current.discoveredEmails.push({ email: foundEmail, url: currentRecord?.url, title: result.title, foundAt: Date.now() });
+  }
+  const sheetRows = [];
+  if (currentRecord && result?.found) sheetRows.push(["Full match", current.email, current.email, currentRecord.url, result.title, result.snippet, new Date().toISOString()]);
+  if (currentRecord && result?.partialFound && !result?.found) sheetRows.push(["Partial match", current.email, current.email.split("@")[0], currentRecord.url, result.title, result.snippet, new Date().toISOString()]);
+  for (const foundEmail of (result?.emails || [])) {
+    if (foundEmail.toLowerCase() !== current.email.toLowerCase()) sheetRows.push(["Other email", current.email, foundEmail, currentRecord?.url || "", result.title, "", new Date().toISOString()]);
+  }
+  await appendSheetRows(current, sheetRows);
   await updateGoogleProgress(current.searchTabId, { status: "Scanning pages", pages: current.pagesVisited || 0, maxPages: current.maxPagesPerRun, matches: current.matches.length, threshold: current.threshold, opened: current.urlsOpened || 0, scraped: current.urlsScraped || 0 });
   current.tabs = (current.tabs || []).filter((item) => item.tabId !== tabId);
   if (currentRecord?.host) {
@@ -450,6 +475,57 @@ async function processSearchTab(tabId) {
   await chrome.tabs.update(tabId, { url: liveJob.nextSearchUrl }).catch(() => {});
 }
 
+async function getGoogleAccessToken(interactive = true) {
+  const settings = await getSettings();
+  if (!settings.googleClientId) throw new Error("Add a Google OAuth client ID to enable Sheets export.");
+  const stored = await chrome.storage.local.get(GOOGLE_TOKEN_KEY);
+  if (stored[GOOGLE_TOKEN_KEY]?.accessToken && stored[GOOGLE_TOKEN_KEY].expiresAt > Date.now() + 60000) return stored[GOOGLE_TOKEN_KEY].accessToken;
+  const redirect = chrome.identity.getRedirectURL("sheets");
+  const params = new URLSearchParams({ client_id: settings.googleClientId, response_type: "token", redirect_uri: redirect, scope: "https://www.googleapis.com/auth/drive.metadata.readonly https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/spreadsheets", prompt: "select_account" });
+  const responseUrl = await chrome.identity.launchWebAuthFlow({ url: "https://accounts.google.com/o/oauth2/v2/auth?" + params, interactive });
+  const values = new URLSearchParams(new URL(responseUrl).hash.replace(/^#/, ""));
+  const accessToken = values.get("access_token");
+  if (!accessToken) throw new Error("Google authorization did not return an access token.");
+  await chrome.storage.local.set({ [GOOGLE_TOKEN_KEY]: { accessToken, expiresAt: Date.now() + 3500000 } });
+  return accessToken;
+}
+
+async function googleApi(path, init = {}, interactive = false) {
+  const token = await getGoogleAccessToken(interactive);
+  const headers = { "Content-Type": "application/json", ...(init.headers || {}), Authorization: "Bearer " + token };
+  const response = await fetch("https://www.googleapis.com" + path, { ...init, headers });
+  if (response.status === 401) { await chrome.storage.local.remove(GOOGLE_TOKEN_KEY); throw new Error("Google authorization expired. Connect Sheets again."); }
+  if (!response.ok) throw new Error("Google Sheets request failed (" + response.status + ").");
+  return response.json();
+}
+
+async function ensureSheetForJob(job, interactive = false) {
+  if (job.sheetId) return job;
+  const settings = await getSettings();
+  if (!settings.googleClientId) return job;
+  const baseName = job.email + " - v";
+  for (let version = 1; version <= 1000; version += 1) {
+    const title = baseName + version;
+    const query = encodeURIComponent("name = \"" + title + "\" and mimeType = \"application/vnd.google-apps.spreadsheet\" and trashed = false");
+    const found = await googleApi("/drive/v3/files?q=" + query + "&pageSize=1&fields=files(id,name)", {}, interactive);
+    if (!found.files?.length) {
+      const created = await googleApi("/sheets/v4/spreadsheets", { method: "POST", body: JSON.stringify({ properties: { title } }) }, interactive);
+      job.sheetId = created.spreadsheetId;
+      job.sheetTitle = title;
+      job.sheetUrl = "https://docs.google.com/spreadsheets/d/" + created.spreadsheetId + "/edit";
+      await googleApi("/sheets/v4/spreadsheets/" + created.spreadsheetId + "/values/Sheet1!A1:G1?valueInputOption=USER_ENTERED", { method: "PUT", body: JSON.stringify({ values: [["Type", "Provided email", "Found email", "URL", "Title", "Snippet", "Found at"]] }) }, interactive);
+      await saveJob(job);
+      return job;
+    }
+  }
+  throw new Error("Could not find an available Google Sheet version.");
+}
+
+async function appendSheetRows(job, rows) {
+  if (!job.sheetId || !rows.length) return;
+  sheetWriteChain = sheetWriteChain.then(() => googleApi("/sheets/v4/spreadsheets/" + job.sheetId + "/values/Sheet1!A:G:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS", { method: "POST", body: JSON.stringify({ values: rows }) }, false));
+  await sheetWriteChain.catch((error) => { job.sheetError = error.message; saveJob(job); });
+}
 async function clearSeenUrls() {
   await chrome.storage.local.remove(SEEN_URLS_KEY);
 }
@@ -531,7 +607,7 @@ async function startSearch(email, requestedThreshold) {
   const threshold = Math.max(1, Math.min(50, Number(requestedThreshold) || settings.threshold || 3));
   const maxPagesPerRun = Math.max(1, Math.min(50, Number(settings.pagesPerRun) || 5));
   const job = {
-    id: crypto.randomUUID(), email: email.trim(), threshold, status: "searching", matches: [], candidates: [],
+    id: crypto.randomUUID(), email: email.trim(), threshold, status: "searching", matches: [], partialMatches: [], discoveredEmails: [], candidates: [],
     tabs: [], hostQueues: {}, activeHosts: [], pendingUrls: 0, urlsOpened: 0, urlsScraped: 0, seenUrls: [], pagesVisited: 0, pagesThisRun: 0,
     maxPagesPerRun, searchExhausted: false, ownerWindowId: currentWindow.id, startedAt: Date.now()
   };
@@ -540,6 +616,7 @@ async function startSearch(email, requestedThreshold) {
   job.searchTabId = searchTab.id;
   job.searchUrl = searchUrl;
   job.baseSearchUrl = `https://www.google.com/search?q=${encodeURIComponent(job.email)}`;
+  await ensureSheetForJob(job, true).catch((error) => { job.sheetError = error.message; saveJob(job); });
   await saveJob(job);
   await chrome.tabs.update(searchTab.id, { url: searchUrl });
   return job;
@@ -603,6 +680,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         next.excludedDomains = [...new Set((next.excludedDomains || []).map(normalizeDomain).filter(Boolean))];
         await chrome.storage.local.set({ [SETTINGS_KEY]: next });
         sendResponse({ settings: next });
+      } else if (message.type === "CONNECT_SHEETS") {
+        await getGoogleAccessToken(true);
+        sendResponse({ ok: true });
       } else if (message.type === "START_SEARCH") {
         sendResponse({ job: await startSearch(message.email, message.threshold) });
       } else if (message.type === "TOGGLE_GOOGLE") {
@@ -622,6 +702,17 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   })();
   return true;
 });
+
+
+
+
+
+
+
+
+
+
+
 
 
 

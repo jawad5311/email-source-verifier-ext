@@ -3,7 +3,7 @@
   "name": "Email Source Verifier",
   "version": "1.0.0",
   "description": "Finds public pages that contain a supplied email address and reports the matching URLs.",
-  "permissions": ["storage", "tabs", "scripting"],
+  "permissions": ["storage", "tabs", "scripting", "identity"],
   "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "background.js",
@@ -26,3 +26,4 @@
     "128": "icons/icon.svg"
   }
 }
+

@@ -20,3 +20,8 @@ The extension uses `<all_urls>` because it must inspect the pages returned by Go
 - The match threshold ends the job and closes scan tabs.
 - The excluded-domain toggle and list can be edited from the bottom of the popup.
 - The on/off switch stops new work and can stop an active scan.
+- Results are separated into full-email matches, optional partial local-part matches, and all other email addresses discovered on scanned pages.
+- Enable **Partial match** to search for the part before `@` only when the full email is not present on a page.
+- Optional Google Sheets export creates a versioned sheet such as `person@example.com - v1`, appends rows as pages are scanned, and reuses the current sheet when a run is resumed. To connect it, create a Google OAuth Web application client ID, register the redirect URL returned by the Chrome Identity API for this extension, then paste the client ID into the popup.
+
+

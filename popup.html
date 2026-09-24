@@ -25,6 +25,7 @@
           <label for="pages">Google pages per run</label>
           <input id="pages" type="number" min="1" max="50" value="5" />
         </div>
+        <div class="row-between option-row"><div><label for="partialMatch">Partial match</label><p>Match the email local part when the full email is absent.</p></div><label class="switch"><input id="partialMatch" type="checkbox" /><span></span></label></div>
         <div class="two-col">
           <label for="activeTabs">Maximum scan tabs</label>
           <input id="activeTabs" type="number" min="1" max="50" value="5" />
@@ -43,11 +44,13 @@
         <button id="manageExclusions" class="link-button">Manage excluded sites</button>
         <div id="exclusionsPanel" hidden><textarea id="excludedDomains" rows="4" placeholder="one domain per line"></textarea><button id="saveExclusions" class="secondary small">Save excluded sites</button></div>
       </section>
+      <section class="card sheets-card"><h2>Google Sheets export</h2><p>Optional: create a versioned sheet and append results as pages are scanned.</p><input id="googleClientId" type="text" placeholder="Google OAuth client ID" autocomplete="off" /><button id="connectSheets" class="secondary small">Save and connect Sheets</button><p id="sheetLink" class="sheet-link"></p></section>
       <footer>Only scan pages you are authorized to access. Respect site terms and robots policies.</footer>
     </main>
     <script src="popup.js"></script>
   </body>
 </html>
+
 
 
 
